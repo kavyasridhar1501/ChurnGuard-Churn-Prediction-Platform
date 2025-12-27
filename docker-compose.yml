@@ -1,0 +1,103 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:16-alpine
+    container_name: churnguard-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-churnguard_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-churnguard_password}
+      POSTGRES_DB: ${POSTGRES_DB:-churnguard}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init-db:/docker-entrypoint-initdb.d
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U churnguard_user -d churnguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - churnguard-network
+    restart: unless-stopped
+
+  # pgAdmin for Database Management
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: churnguard-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@churnguard.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - churnguard-network
+    restart: unless-stopped
+
+  # MLflow Tracking Server
+  mlflow:
+    image: python:3.11-slim
+    container_name: churnguard-mlflow
+    working_dir: /mlflow
+    environment:
+      MLFLOW_BACKEND_STORE_URI: postgresql://${POSTGRES_USER:-churnguard_user}:${POSTGRES_PASSWORD:-churnguard_password}@postgres:5432/${POSTGRES_DB:-churnguard}
+      MLFLOW_ARTIFACT_ROOT: /mlflow/mlartifacts
+    volumes:
+      - mlflow_data:/mlflow/mlartifacts
+      - ./requirements.txt:/mlflow/requirements.txt
+    ports:
+      - "5001:5001"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - churnguard-network
+    command: >
+      bash -c "pip install mlflow psycopg2-binary &&
+               mlflow server
+               --backend-store-uri postgresql://${POSTGRES_USER:-churnguard_user}:${POSTGRES_PASSWORD:-churnguard_password}@postgres:5432/${POSTGRES_DB:-churnguard}
+               --default-artifact-root /mlflow/mlartifacts
+               --host 0.0.0.0
+               --port 5001"
+    restart: unless-stopped
+
+  # FastAPI Backend (will be uncommented after implementation)
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: docker/Dockerfile.api
+  #   container_name: churnguard-api
+  #   environment:
+  #     DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-churnguard_user}:${POSTGRES_PASSWORD:-churnguard_password}@postgres:5432/${POSTGRES_DB:-churnguard}
+  #     MLFLOW_TRACKING_URI: http://mlflow:5001
+  #   volumes:
+  #     - ./src:/app/src
+  #     - ./models:/app/models
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     mlflow:
+  #       condition: service_started
+  #   networks:
+  #     - churnguard-network
+  #   restart: unless-stopped
+  #   command: uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+volumes:
+  postgres_data:
+  pgadmin_data:
+  mlflow_data:
+
+networks:
+  churnguard-network:
+    driver: bridge
